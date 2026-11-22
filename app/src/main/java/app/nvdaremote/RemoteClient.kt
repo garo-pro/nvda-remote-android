@@ -123,7 +123,9 @@ class RemoteClient(private val listener: RemoteListener, private val trust: Trus
         generation++
         worker?.interrupt()
         worker = null
-        closeQuietly(socket)
+        // Closing a TLS socket writes to the network, which is forbidden on the main thread.
+        val old = socket
+        if (old != null) Thread({ closeQuietly(old) }, "nvdaremote-close").apply { isDaemon = true }.start()
         socket = null
         out = null
         followerCount = 0
@@ -390,6 +392,6 @@ private fun fingerprintOf(der: ByteArray): String =
 private fun closeQuietly(s: Socket?) {
     try {
         s?.close()
-    } catch (_: IOException) {
+    } catch (_: Exception) {
     }
 }

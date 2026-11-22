@@ -28,7 +28,7 @@ class MainActivity : Activity(), RemoteListener {
     private lateinit var portField: EditText
     private lateinit var keyField: EditText
     private lateinit var connectButton: Button
-    private lateinit var controlButton: Button
+    private lateinit var controlButton: KeyCaptureButton
     private lateinit var clipboardButton: Button
     private lateinit var sasButton: Button
     private lateinit var statusView: TextView
@@ -57,6 +57,7 @@ class MainActivity : Activity(), RemoteListener {
         keyField = findViewById(R.id.key)
         connectButton = findViewById(R.id.connect)
         controlButton = findViewById(R.id.control)
+        controlButton.preImeHandler = { handleKey(it) }
         clipboardButton = findViewById(R.id.clipboard)
         sasButton = findViewById(R.id.sas)
         statusView = findViewById(R.id.status)
@@ -218,15 +219,19 @@ class MainActivity : Activity(), RemoteListener {
 
     // ---- keyboard capture ----
 
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean =
+        if (handleKey(event)) true else super.dispatchKeyEvent(event)
+
+    /** True if consumed. Runs before the IME (via the control button) and again as a fallback. */
+    private fun handleKey(event: KeyEvent): Boolean {
         // Toggle shortcut: Control+Shift+F11 (like NVDA+F11 on the Windows client).
         if (event.keyCode == KeyEvent.KEYCODE_F11 && event.isCtrlPressed && event.isShiftPressed) {
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) setRemote(!remoteMode)
             return true
         }
-        if (!remoteMode) return super.dispatchKeyEvent(event)
+        if (!remoteMode) return false
         val packed = KeyMap.lookup(event.keyCode)
-        if (packed < 0) return super.dispatchKeyEvent(event) // Back, Home, volume, media...
+        if (packed < 0) return false // Back, Home, volume, media...
         when (event.action) {
             KeyEvent.ACTION_DOWN -> {
                 held[event.keyCode] = packed
@@ -271,10 +276,13 @@ class MainActivity : Activity(), RemoteListener {
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             currentFocus?.let { imm.hideSoftInputFromWindow(it.windowToken, 0) }
             controlButton.requestFocus()
+            // Screen pinning keeps Windows/Alt+Tab from opening Android's launcher, recents and search.
+            try { startLockTask() } catch (_: Exception) {}
             if (announce) say("Controlling remote computer")
         } else {
             releaseAll()
             remoteMode = false
+            try { stopLockTask() } catch (_: Exception) {}
             window.clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
             if (announce) say("Controlling local device")
         }
