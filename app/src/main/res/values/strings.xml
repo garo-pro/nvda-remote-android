@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">NVDA Remote</string>
+    <string name="host_label">Server address</string>
+    <string name="port_label">Port</string>
+    <string name="key_label">Connection key</string>
+    <string name="connect">Connect</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="control_start">Start controlling remote computer</string>
+    <string name="control_stop">Stop controlling remote computer</string>
+    <string name="send_clipboard">Send clipboard to remote computer</string>
+    <string name="send_sas">Send Control Alt Delete</string>
+    <string name="rate_label">Speech rate</string>
+    <string name="help">Press Control, Shift and F11 on the keyboard to start or stop controlling the remote computer. While controlling, every key is sent to the remote computer, except Back, Home, volume and media keys.</string>
+</resources>
