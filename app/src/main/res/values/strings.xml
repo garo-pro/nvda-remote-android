@@ -11,4 +11,7 @@
     <string name="send_sas">Send Control Alt Delete</string>
     <string name="rate_label">Speech rate</string>
     <string name="help">Press Control, Shift and F11 on the keyboard to start or stop controlling the remote computer. While controlling, every key is sent to the remote computer, except Back, Home, volume and media keys.</string>
+    <string name="key_filter_label">NVDA Remote key capture</string>
+    <string name="key_filter_description">Sends the Windows key, Alt+Tab and other system shortcuts to the remote computer while you are controlling it. It does nothing otherwise and reads no screen content.</string>
+    <string name="key_filter_settings">Accessibility settings (enable key capture)</string>
 </resources>

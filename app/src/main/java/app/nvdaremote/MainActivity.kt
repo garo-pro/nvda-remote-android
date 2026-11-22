@@ -88,6 +88,9 @@ class MainActivity : Activity(), RemoteListener {
         }
         controlButton.setOnClickListener { setRemote(!remoteMode) }
         clipboardButton.setOnClickListener { sendClipboard() }
+        findViewById<Button>(R.id.accessibility).setOnClickListener {
+            startActivity(android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
         sasButton.setOnClickListener {
             client.sendSas()
             say("Control Alt Delete sent")
@@ -276,13 +279,13 @@ class MainActivity : Activity(), RemoteListener {
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             currentFocus?.let { imm.hideSoftInputFromWindow(it.windowToken, 0) }
             controlButton.requestFocus()
-            // Screen pinning keeps Windows/Alt+Tab from opening Android's launcher, recents and search.
-            try { startLockTask() } catch (_: Exception) {}
+            KeyFilterService.sink = { handleKey(it) }
+            if (!KeyFilterService.running) say("Windows and Alt Tab are not captured. Enable NVDA Remote key capture in accessibility settings.")
             if (announce) say("Controlling remote computer")
         } else {
             releaseAll()
             remoteMode = false
-            try { stopLockTask() } catch (_: Exception) {}
+            KeyFilterService.sink = null
             window.clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
             if (announce) say("Controlling local device")
         }
