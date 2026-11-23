@@ -30,8 +30,9 @@ object Tones {
             buf[2 * i] = (s * l * Short.MAX_VALUE).toInt().toShort()
             buf[2 * i + 1] = (s * r * Short.MAX_VALUE).toInt().toShort()
         }
+        var track: AudioTrack? = null
         try {
-            val track = AudioTrack.Builder()
+            track = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
@@ -50,8 +51,14 @@ object Tones {
                 .build()
             track.write(buf, 0, buf.size)
             track.play()
-            handler.postDelayed({ track.release() }, lengthMs.coerceIn(1, 2000) + 200L)
+            val playing: AudioTrack = track
+            handler.postDelayed({ playing.release() }, lengthMs.coerceIn(1, 2000) + 200L)
         } catch (_: Exception) {
+            // Release the native player too, or a failed beep leaks one for good.
+            try {
+                track?.release()
+            } catch (_: Exception) {
+            }
         }
     }
 }

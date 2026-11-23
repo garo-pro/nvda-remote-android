@@ -5,7 +5,8 @@ A minimal controller ("leader") for NVDA Remote Access, built against the protoc
 It controls a Windows PC running NVDA; it does not make the phone controllable.
 
 ## Use
-1. Enter server address, port (default 6837) and connection key, then press Connect.
+1. Enter server address, port (default 6837) and connection key, then press Connect. The address may also
+   be written as `host:port` or `[IPv6 address]:port`, as in NVDA.
 2. On the Windows side NVDA must be connected to the same server and key as a *controlled* computer.
 3. Press **Ctrl+Shift+F11** on the USB or Bluetooth keyboard (or the "Start controlling" button) to send
    all keys to the PC. Press it again to return to the phone. Speech from NVDA is spoken by the phone's
@@ -17,6 +18,10 @@ Keyboard forwarding (letters, digits, F1-F12, numpad, navigation, modifiers, Ins
 NVDA key, Windows and Applications keys), speech, cancel/pause, NVDA beeps, clipboard in both directions,
 Ctrl+Alt+Delete, automatic reconnect, trust-on-first-use pinning of self-signed server certificates
 (SHA-256 fingerprint shown for confirmation, like NVDA). Braille is not supported.
+
+The numeric keypad follows the phone's Num Lock state, like a Windows keyboard: with Num Lock off it sends
+the keypad navigation keys, so NVDA's desktop-layout review commands (numpad 1-9, plus, minus...) work and
+numpad Insert acts as the NVDA key; with Num Lock on it types digits.
 
 ## Build
 Android Studio, or `./gradlew assembleDebug` with JDK 17 and the Android SDK (platform 35).

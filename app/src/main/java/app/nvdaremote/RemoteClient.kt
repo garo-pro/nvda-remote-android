@@ -13,6 +13,7 @@ import java.security.MessageDigest
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLException
 import javax.net.ssl.SSLSocket
@@ -69,6 +70,32 @@ class RemoteClient(private val listener: RemoteListener, private val trust: Trus
 
         fun hostPort(host: String, port: Int) = if (host.contains(':')) "[$host]:$port" else "$host:$port"
 
+        /**
+         * Splits what the user typed as server address into host and port, accepting the forms NVDA's
+         * own dialog accepts: "host", "host:port", "[ipv6]" and "[ipv6]:port". A bare IPv6 address
+         * (several colons, no brackets) is returned unchanged. The port is null when none was given
+         * or it is not a valid port number.
+         */
+        fun parseAddress(input: String): Pair<String, Int?> {
+            val text = input.trim()
+            fun port(s: String) = s.toIntOrNull()?.takeIf { it in 1..65535 }
+            if (text.startsWith("[")) {
+                val close = text.indexOf(']')
+                if (close > 0) {
+                    val host = text.substring(1, close)
+                    val rest = text.substring(close + 1)
+                    return host to (if (rest.startsWith(":")) port(rest.substring(1)) else null)
+                }
+                return text to null
+            }
+            val colon = text.indexOf(':')
+            if (colon > 0 && colon == text.lastIndexOf(':')) {
+                val p = port(text.substring(colon + 1))
+                if (p != null) return text.substring(0, colon) to p
+            }
+            return text to null
+        }
+
         /** Turns the "sequence" of a speak message into utterances. Speech commands are ignored. */
         fun speechUtterances(sequence: JSONArray?): List<String> {
             val result = ArrayList<String>()
@@ -100,36 +127,55 @@ class RemoteClient(private val listener: RemoteListener, private val trust: Trus
     @Volatile var followerCount = 0
         private set
 
+    /** The output side of one established connection, tagged with the generation that owns it. */
+    private class Link(val gen: Int, val stream: OutputStream)
+
+    // Everything below that a connection attempt and the UI thread both change is guarded by [lock].
+    // A generation number identifies one connect() call; anything done for an older generation
+    // must not touch the state of a newer one.
+    private val lock = Any()
     @Volatile private var generation = 0
-    @Volatile private var socket: Socket? = null
-    @Volatile private var out: OutputStream? = null
-    @Volatile private var worker: Thread? = null
+    private var socket: Socket? = null
+    @Volatile private var link: Link? = null
+    private var worker: Thread? = null
     private val writeLock = Any()
     private val sender = Executors.newSingleThreadExecutor { r ->
         Thread(r, "nvdaremote-send").apply { isDaemon = true }
     }
 
     fun connect(host: String, port: Int, key: String) {
-        disconnect()
-        val gen = ++generation
-        val t = Thread({ runLoop(gen, host, port, key) }, "nvdaremote-net")
-        t.isDaemon = true
-        worker = t
-        setState(gen, State.CONNECTING)
-        t.start()
+        synchronized(lock) {
+            stopLocked()
+            val gen = ++generation
+            val t = Thread({ runLoop(gen, host, port, key) }, "nvdaremote-net")
+            t.isDaemon = true
+            worker = t
+            setStateLocked(gen, State.CONNECTING)
+            t.start()
+        }
     }
 
     fun disconnect() {
+        synchronized(lock) { stopLocked() }
+    }
+
+    /** Disconnects and releases the sending thread. The client cannot be used afterwards. */
+    fun close() {
+        disconnect()
+        sender.shutdown()
+    }
+
+    private fun stopLocked() {
         generation++
         worker?.interrupt()
         worker = null
-        // Closing a TLS socket writes to the network, which is forbidden on the main thread.
         val old = socket
-        if (old != null) Thread({ closeQuietly(old) }, "nvdaremote-close").apply { isDaemon = true }.start()
         socket = null
-        out = null
+        link = null
         followerCount = 0
-        setState(generation, State.DISCONNECTED)
+        // Closing a TLS socket writes to the network, which is forbidden on the main thread.
+        if (old != null) Thread({ closeQuietly(old) }, "nvdaremote-close").apply { isDaemon = true }.start()
+        setStateLocked(generation, State.DISCONNECTED)
     }
 
     // ---- sending ----
@@ -148,14 +194,20 @@ class RemoteClient(private val listener: RemoteListener, private val trust: Trus
     private fun send(obj: JSONObject) {
         val line = (obj.toString() + "\n").toByteArray(Charsets.UTF_8)
         val gen = generation
-        sender.execute {
-            if (gen != generation) return@execute
-            val stream = out ?: return@execute
-            try {
-                writeRaw(stream, line)
-            } catch (e: IOException) {
-                closeQuietly(socket)
+        try {
+            sender.execute {
+                // Only write to the connection that existed when the message was sent.
+                val l = link ?: return@execute
+                if (l.gen != gen) return@execute
+                try {
+                    writeRaw(l.stream, line)
+                } catch (e: IOException) {
+                    // Wake the reader so it reconnects; never touch a newer connection.
+                    synchronized(lock) { if (current(gen)) socket else null }?.let { closeQuietly(it) }
+                }
             }
+        } catch (_: RejectedExecutionException) {
+            // close() was called.
         }
     }
 
@@ -171,10 +223,32 @@ class RemoteClient(private val listener: RemoteListener, private val trust: Trus
     private fun current(gen: Int) = gen == generation
 
     private fun setState(gen: Int, s: State) {
+        synchronized(lock) { setStateLocked(gen, s) }
+    }
+
+    private fun setStateLocked(gen: Int, s: State) {
         if (!current(gen) || state == s) return
         state = s
         listener.onState(s)
     }
+
+    /** Makes [sock] the socket that disconnect() closes, unless this attempt is already obsolete. */
+    private fun attach(gen: Int, sock: Socket) {
+        val attached = synchronized(lock) {
+            if (current(gen)) {
+                socket = sock
+                true
+            } else {
+                false
+            }
+        }
+        if (!attached) {
+            closeQuietly(sock)
+            throw Cancelled()
+        }
+    }
+
+    private class Cancelled : IOException("Cancelled")
 
     private fun runLoop(gen: Int, host: String, port: Int, key: String) {
         var lastError: String? = null
@@ -183,25 +257,22 @@ class RemoteClient(private val listener: RemoteListener, private val trust: Trus
                 session(gen, host, port, key)
                 lastError = null
             } catch (e: CertificateNotTrusted) {
-                if (current(gen)) {
-                    stopFromWorker(gen)
-                    listener.onUntrustedCertificate(host, port, e.fingerprint, e.changed)
-                }
+                if (stopFromWorker(gen)) listener.onUntrustedCertificate(host, port, e.fingerprint, e.changed)
                 return
             } catch (e: FatalProtocolError) {
-                if (current(gen)) {
-                    stopFromWorker(gen)
-                    listener.onError(e.message ?: "Protocol error")
-                }
+                if (stopFromWorker(gen)) listener.onError(e.message ?: "Protocol error")
                 return
             } catch (e: Exception) {
                 val message = describe(e)
                 if (current(gen) && message != lastError) listener.onError(message)
                 lastError = message
             } finally {
-                if (current(gen)) {
-                    out = null
-                    followerCount = 0
+                synchronized(lock) {
+                    if (current(gen)) {
+                        socket = null
+                        link = null
+                        followerCount = 0
+                    }
                 }
             }
             if (!current(gen)) return
@@ -214,14 +285,12 @@ class RemoteClient(private val listener: RemoteListener, private val trust: Trus
         }
     }
 
-    private fun stopFromWorker(gen: Int) {
-        if (!current(gen)) return
-        generation++
-        worker = null
-        socket = null
-        out = null
-        followerCount = 0
-        setState(generation, State.DISCONNECTED)
+    /** Ends this generation from its own worker. False if the user already moved on. */
+    private fun stopFromWorker(gen: Int): Boolean = synchronized(lock) {
+        if (!current(gen)) return false
+        worker = null // do not interrupt ourselves
+        stopLocked()
+        true
     }
 
     private class FatalProtocolError(message: String) : Exception(message)
@@ -236,12 +305,7 @@ class RemoteClient(private val listener: RemoteListener, private val trust: Trus
 
     private fun session(gen: Int, host: String, port: Int, key: String) {
         val pinned = trust.fingerprint(hostPort(host, port))
-        val sock = openTls(host, port, pinned)
-        socket = sock
-        if (!current(gen)) {
-            closeQuietly(sock)
-            return
-        }
+        val sock = openTls(gen, host, port, pinned)
         sock.use {
             val stream = it.outputStream
             writeRaw(
@@ -254,7 +318,10 @@ class RemoteClient(private val listener: RemoteListener, private val trust: Trus
                 (JSONObject().put("type", "join").put("channel", key).put("connection_type", "master")
                     .toString() + "\n").toByteArray(Charsets.UTF_8)
             )
-            out = stream
+            synchronized(lock) {
+                if (!current(gen)) return
+                link = Link(gen, stream)
+            }
             val reader = BufferedReader(InputStreamReader(it.inputStream, Charsets.UTF_8))
             val followers = HashSet<Int>()
             while (current(gen)) {
@@ -273,8 +340,11 @@ class RemoteClient(private val listener: RemoteListener, private val trust: Trus
     private fun handle(gen: Int, obj: JSONObject, followers: MutableSet<Int>) {
         if (!current(gen)) return
         fun publishFollowers() {
-            followerCount = followers.size
-            listener.onFollowerCount(followers.size)
+            synchronized(lock) {
+                if (!current(gen)) return
+                followerCount = followers.size
+                listener.onFollowerCount(followers.size)
+            }
         }
         fun addClient(client: JSONObject?) {
             if (client != null && client.optString("connection_type") == "slave") followers.add(client.optInt("id"))
@@ -312,19 +382,21 @@ class RemoteClient(private val listener: RemoteListener, private val trust: Trus
 
     // ---- TLS ----
 
-    private fun openTls(host: String, port: Int, pinned: String?): SSLSocket {
+    private fun openTls(gen: Int, host: String, port: Int, pinned: String?): SSLSocket {
         val ctx = SSLContext.getInstance("TLS")
         if (pinned != null) ctx.init(null, arrayOf(PinnedTrustManager(pinned)), null) else ctx.init(null, null, null)
         try {
-            return handshake(ctx, host, port, verifyHost = pinned == null)
+            return handshake(gen, ctx, host, port, verifyHost = pinned == null)
         } catch (e: SSLException) {
             if (!isCertificateProblem(e)) throw e
-            throw CertificateNotTrusted(fetchFingerprint(host, port), changed = pinned != null)
+            throw CertificateNotTrusted(fetchFingerprint(gen, host, port), changed = pinned != null)
         }
     }
 
-    private fun handshake(ctx: SSLContext, host: String, port: Int, verifyHost: Boolean): SSLSocket {
+    private fun handshake(gen: Int, ctx: SSLContext, host: String, port: Int, verifyHost: Boolean): SSLSocket {
         val raw = Socket()
+        // Registered before connecting so that disconnect() can abort a slow connect or handshake.
+        attach(gen, raw)
         try {
             raw.connect(InetSocketAddress(host, port), 10_000)
             raw.keepAlive = true
@@ -338,6 +410,7 @@ class RemoteClient(private val listener: RemoteListener, private val trust: Trus
             ssl.soTimeout = 15_000
             ssl.startHandshake()
             ssl.soTimeout = 0
+            attach(gen, ssl)
             return ssl
         } catch (e: Throwable) {
             closeQuietly(raw)
@@ -356,14 +429,14 @@ class RemoteClient(private val listener: RemoteListener, private val trust: Trus
     }
 
     /** Reads the server certificate fingerprint without trusting it; nothing is sent over this connection. */
-    private fun fetchFingerprint(host: String, port: Int): String {
+    private fun fetchFingerprint(gen: Int, host: String, port: Int): String {
         val ctx = SSLContext.getInstance("TLS")
         ctx.init(null, arrayOf(object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
             override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
             override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
         }), null)
-        val ssl = handshake(ctx, host, port, verifyHost = false)
+        val ssl = handshake(gen, ctx, host, port, verifyHost = false)
         try {
             return fingerprintOf(ssl.session.peerCertificates[0].encoded)
         } finally {

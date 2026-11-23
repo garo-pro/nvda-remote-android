@@ -68,8 +68,30 @@ object KeyMap {
         m(KeyEvent.KEYCODE_SLASH, 0xBF)
     }
 
+    /**
+     * What the numeric keypad sends when Num Lock is off, like a Windows keyboard driver does:
+     * the non-extended navigation keys. NVDA's desktop layout needs these for its review commands
+     * (numpad 7, 8, 9...) and treats numpad Insert as the NVDA key.
+     */
+    private val numpadNavigation = mapOf(
+        KeyEvent.KEYCODE_NUMPAD_0 to 0x2D, // Insert
+        KeyEvent.KEYCODE_NUMPAD_1 to 0x23, // End
+        KeyEvent.KEYCODE_NUMPAD_2 to 0x28, // Down
+        KeyEvent.KEYCODE_NUMPAD_3 to 0x22, // Page Down
+        KeyEvent.KEYCODE_NUMPAD_4 to 0x25, // Left
+        KeyEvent.KEYCODE_NUMPAD_5 to 0x0C, // Clear
+        KeyEvent.KEYCODE_NUMPAD_6 to 0x27, // Right
+        KeyEvent.KEYCODE_NUMPAD_7 to 0x24, // Home
+        KeyEvent.KEYCODE_NUMPAD_8 to 0x26, // Up
+        KeyEvent.KEYCODE_NUMPAD_9 to 0x21, // Page Up
+        KeyEvent.KEYCODE_NUMPAD_DOT to 0x2E, // Delete
+    )
+
     /** Returns the packed code, or -1 if the key is not forwarded. */
-    fun lookup(keyCode: Int): Int = map[keyCode] ?: -1
+    fun lookup(keyCode: Int, numLockOn: Boolean = true): Int {
+        if (!numLockOn) numpadNavigation[keyCode]?.let { return it }
+        return map[keyCode] ?: -1
+    }
 
     fun vk(packed: Int) = packed and 0xFF
     fun extended(packed: Int) = packed and EXTENDED != 0

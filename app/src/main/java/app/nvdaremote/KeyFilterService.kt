@@ -28,4 +28,9 @@ class KeyFilterService : AccessibilityService() {
         running = false
         return super.onUnbind(intent)
     }
+
+    override fun onDestroy() {
+        running = false
+        super.onDestroy()
+    }
 }

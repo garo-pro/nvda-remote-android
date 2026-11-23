@@ -103,9 +103,11 @@ class MainActivity : Activity(), RemoteListener {
     // ---- connection ----
 
     private fun startConnection() {
-        val host = hostField.text.toString().trim()
+        // NVDA accepts "host:port" in its address field, so people paste it that way.
+        val (host, portInAddress) = RemoteClient.parseAddress(hostField.text.toString())
         val key = keyField.text.toString().trim()
-        val port = portField.text.toString().trim().toIntOrNull()?.takeIf { it in 1..65535 }
+        val port = portInAddress
+            ?: portField.text.toString().trim().toIntOrNull()?.takeIf { it in 1..65535 }
             ?: RemoteClient.DEFAULT_PORT
         if (host.isEmpty()) {
             say("Enter the server address first")
@@ -117,6 +119,7 @@ class MainActivity : Activity(), RemoteListener {
             keyField.requestFocus()
             return
         }
+        if (portInAddress != null) hostField.setText(host)
         portField.setText(port.toString())
         prefs.edit().putString("host", host).putInt("port", port).putString("key", key).apply()
         client.connect(host, port, key)
@@ -129,8 +132,13 @@ class MainActivity : Activity(), RemoteListener {
 
     // ---- RemoteListener (may be called on background threads) ----
 
+    /** Runs [block] on the main thread unless the activity has been destroyed by then. */
+    private fun post(block: () -> Unit) {
+        ui.post { if (!isDestroyed) block() }
+    }
+
     override fun onState(state: State) {
-        ui.post {
+        post {
             val previous = lastState
             lastState = state
             if (state != State.CONNECTED) {
@@ -150,7 +158,7 @@ class MainActivity : Activity(), RemoteListener {
     }
 
     override fun onFollowerCount(count: Int) {
-        ui.post {
+        post {
             val old = followers
             followers = count
             if (count == 0 && remoteMode) setRemote(false, announce = false)
@@ -160,7 +168,8 @@ class MainActivity : Activity(), RemoteListener {
                         0 -> "No controlled computers connected"
                         1 -> "1 controlled computer connected"
                         else -> "$count controlled computers connected"
-                    }
+                    },
+                    interrupt = false
                 )
             }
             updateUi()
@@ -168,23 +177,23 @@ class MainActivity : Activity(), RemoteListener {
     }
 
     override fun onSpeak(text: String) {
-        ui.post { speech.speak(text) }
+        post { speech.speak(text) }
     }
 
     override fun onCancelSpeech() {
-        ui.post { speech.cancel() }
+        post { speech.cancel() }
     }
 
     override fun onPauseSpeech(paused: Boolean) {
-        ui.post { speech.setPaused(paused) }
+        post { speech.setPaused(paused) }
     }
 
     override fun onTone(hz: Double, lengthMs: Int, left: Int, right: Int) {
-        ui.post { Tones.beep(hz, lengthMs, left, right) }
+        post { Tones.beep(hz, lengthMs, left, right) }
     }
 
     override fun onClipboard(text: String) {
-        ui.post {
+        post {
             val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             cm.setPrimaryClip(ClipData.newPlainText("NVDA Remote", text))
             say("Clipboard received")
@@ -192,15 +201,16 @@ class MainActivity : Activity(), RemoteListener {
     }
 
     override fun onMotd(text: String) {
-        ui.post { say("Message from server: $text") }
+        post { say("Message from server: $text") }
     }
 
     override fun onError(message: String) {
-        ui.post { say(message) }
+        post { say(message) }
     }
 
     override fun onUntrustedCertificate(host: String, port: Int, fingerprint: String, changed: Boolean) {
-        ui.post {
+        post {
+            if (isFinishing) return@post
             val spaced = fingerprint.chunked(8).joinToString(" ")
             val intro = if (changed) {
                 "The certificate of $host changed since you trusted it. This could mean someone is intercepting the connection."
@@ -233,18 +243,18 @@ class MainActivity : Activity(), RemoteListener {
             return true
         }
         if (!remoteMode) return false
-        val packed = KeyMap.lookup(event.keyCode)
-        if (packed < 0) return false // Back, Home, volume, media...
+        if (KeyMap.lookup(event.keyCode) < 0) return false // Back, Home, volume, media...
         when (event.action) {
             KeyEvent.ACTION_DOWN -> {
-                held[event.keyCode] = packed
+                // A key that is already down keeps the code it was pressed with (auto-repeat).
+                val packed = held.getOrPut(event.keyCode) { KeyMap.lookup(event.keyCode, event.isNumLockOn) }
                 client.sendKey(KeyMap.vk(packed), KeyMap.extended(packed), true)
             }
             KeyEvent.ACTION_UP -> {
+                // Release exactly what was pressed, even if Num Lock changed in between.
                 // Keys that went down before remote control started are not released remotely.
-                if (held.remove(event.keyCode) != null) {
-                    client.sendKey(KeyMap.vk(packed), KeyMap.extended(packed), false)
-                }
+                val packed = held.remove(event.keyCode)
+                if (packed != null) client.sendKey(KeyMap.vk(packed), KeyMap.extended(packed), false)
             }
         }
         return true
@@ -278,15 +288,23 @@ class MainActivity : Activity(), RemoteListener {
             window.addFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             currentFocus?.let { imm.hideSoftInputFromWindow(it.windowToken, 0) }
+            // The control button sees keys before the IME, but only while it has focus. It is focusable
+            // in touch mode only now: otherwise the first tap on it would just focus it, not press it.
+            controlButton.isFocusableInTouchMode = true
             controlButton.requestFocus()
             KeyFilterService.sink = { handleKey(it) }
-            if (!KeyFilterService.running) say("Windows and Alt Tab are not captured. Enable NVDA Remote key capture in accessibility settings.")
-            if (announce) say("Controlling remote computer")
+            // One message: a second interrupting one would cut the first off.
+            val warning = if (KeyFilterService.running) "" else
+                "Windows and Alt Tab are not captured. Enable NVDA Remote key capture in accessibility settings."
+            val message = listOf(if (announce) "Controlling remote computer." else "", warning)
+                .filter { it.isNotEmpty() }.joinToString(" ")
+            if (message.isNotEmpty()) say(message)
         } else {
             releaseAll()
             remoteMode = false
             KeyFilterService.sink = null
             window.clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
+            controlButton.isFocusableInTouchMode = false
             if (announce) say("Controlling local device")
         }
         updateUi()
@@ -315,9 +333,9 @@ class MainActivity : Activity(), RemoteListener {
         }
     }
 
-    private fun say(text: String) {
+    private fun say(text: String, interrupt: Boolean = true) {
         statusView.text = text
-        speech.speak(text, interrupt = true)
+        speech.announce(text, interrupt)
     }
 
     private fun updateUi() {
@@ -338,9 +356,12 @@ class MainActivity : Activity(), RemoteListener {
 
     override fun onDestroy() {
         super.onDestroy()
-        if (isFinishing) {
-            client.disconnect()
-            speech.shutdown()
-        }
+        // Also when the activity is only being recreated: the new instance makes its own client,
+        // so an old connection left running would keep speaking through this dead activity.
+        // (onPause has already left remote mode and released the remote keys.)
+        KeyFilterService.sink = null
+        client.close()
+        speech.shutdown()
+        ui.removeCallbacksAndMessages(null)
     }
 }
