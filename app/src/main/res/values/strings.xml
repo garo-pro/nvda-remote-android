@@ -9,7 +9,14 @@
     <string name="control_stop">Stop controlling remote computer</string>
     <string name="send_clipboard">Send clipboard to remote computer</string>
     <string name="send_sas">Send Control Alt Delete</string>
-    <string name="rate_label">Speech rate</string>
+    <string name="rate_label">Speech rate (text-to-speech engines only; a screen reader uses its own rate)</string>
+    <string name="speech_output_title">Speech output</string>
+    <string name="speech_output_button">Speech output: %1$s</string>
+    <string name="speech_output_screen_reader">Screen reader (%1$s)</string>
+    <string name="speech_output_screen_reader_unnamed">Screen reader</string>
+    <string name="speech_output_screen_reader_off">Screen reader (none is on now, so the default text-to-speech engine speaks)</string>
+    <string name="speech_output_default_engine">Default text-to-speech engine (%1$s)</string>
+    <string name="speech_output_default_engine_unnamed">Default text-to-speech engine</string>
     <string name="help">Press Control, Shift and F11 on the keyboard to start or stop controlling the remote computer. While controlling, every key is sent to the remote computer, except Back, Home, volume and media keys.</string>
     <string name="key_filter_label">NVDA Remote key capture</string>
     <string name="key_filter_description">Sends the Windows key, Alt+Tab and other system shortcuts to the remote computer while you are controlling it. It does nothing otherwise and reads no screen content.</string>

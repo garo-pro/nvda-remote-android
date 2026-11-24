@@ -103,6 +103,13 @@
             android:minHeight="48dp"
             android:text="@string/key_filter_settings" />
 
+        <Button
+            android:id="@+id/speech_output"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:text="@string/speech_output_title" />
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

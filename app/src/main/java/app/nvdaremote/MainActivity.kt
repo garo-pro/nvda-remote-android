@@ -31,9 +31,12 @@ class MainActivity : Activity(), RemoteListener {
     private lateinit var controlButton: KeyCaptureButton
     private lateinit var clipboardButton: Button
     private lateinit var sasButton: Button
+    private lateinit var speechButton: Button
+    private lateinit var rateBar: SeekBar
     private lateinit var statusView: TextView
 
     private var remoteMode = false
+    private var speechOutput = Speech.SCREEN_READER
     private var followers = 0
     private var lastState = State.DISCONNECTED
 
@@ -61,7 +64,8 @@ class MainActivity : Activity(), RemoteListener {
         clipboardButton = findViewById(R.id.clipboard)
         sasButton = findViewById(R.id.sas)
         statusView = findViewById(R.id.status)
-        val rateBar = findViewById<SeekBar>(R.id.rate)
+        speechButton = findViewById(R.id.speech_output)
+        rateBar = findViewById(R.id.rate)
 
         hostField.setText(prefs.getString("host", ""))
         portField.setText(prefs.getInt("port", RemoteClient.DEFAULT_PORT).toString())
@@ -69,7 +73,10 @@ class MainActivity : Activity(), RemoteListener {
 
         val rateStep = prefs.getInt("rate", 5)
         rateBar.progress = rateStep
-        speech = Speech(this, rateFor(rateStep))
+        speechOutput = prefs.getString("speech_output", null) ?: Speech.SCREEN_READER
+        speech = Speech(this, rateFor(rateStep), speechOutput)
+        speech.onRouteChanged = { updateSpeechUi() }
+        speechButton.setOnClickListener { chooseSpeechOutput() }
         rateBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
                 if (!fromUser) return
@@ -96,6 +103,13 @@ class MainActivity : Activity(), RemoteListener {
             say("Control Alt Delete sent")
         }
         updateUi()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // A screen reader may have been turned on or off while the app was in the background.
+        speech.refresh()
+        updateSpeechUi()
     }
 
     private fun rateFor(step: Int) = 0.5f + step * 0.1f
@@ -318,6 +332,35 @@ class MainActivity : Activity(), RemoteListener {
     override fun onPause() {
         super.onPause()
         if (remoteMode) setRemote(false, announce = false)
+    }
+
+    // ---- speech output ----
+
+    private fun chooseSpeechOutput() {
+        if (isFinishing) return
+        val choices = Speech.choices(this)
+        val labels = choices.map { it.label }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.speech_output_title)
+            .setSingleChoiceItems(labels, choices.indexOfFirst { it.id == speechOutput }) { dialog, which ->
+                dialog.dismiss()
+                val choice = choices[which]
+                speechOutput = choice.id
+                prefs.edit().putString("speech_output", choice.id).apply()
+                speech.setOutput(choice.id)
+                updateSpeechUi()
+                // A screen reader reads the button's new label anyway; an engine speaks a sample.
+                if (!speech.usesScreenReader) say(getString(R.string.speech_output_button, choice.label))
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun updateSpeechUi() {
+        val label = Speech.choices(this).firstOrNull { it.id == speechOutput }?.label ?: speechOutput
+        speechButton.text = getString(R.string.speech_output_button, label)
+        // A screen reader speaks at its own rate.
+        rateBar.isEnabled = !speech.usesScreenReader
     }
 
     // ---- misc ----
